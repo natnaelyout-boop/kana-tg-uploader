@@ -44,7 +44,6 @@ def get_or_create_target_repo():
         timeout=30,
     ).json()
 
-    # Find an existing video repo with fewer than 10 assets
     for r in repos:
         if r["private"] or any(k in r["name"].lower() for k in ("thumb", "image", "poster", "uploader")):
             continue
@@ -62,7 +61,6 @@ def get_or_create_target_repo():
             ).json()
             return r["full_name"], created_rel["id"]
 
-    # Create a new repo automatically if all existing repos have 10 videos
     new_name = f"kanamovies_{int(time.time())}"
     new_repo = requests.post(
         "https://api.github.com/user/repos",
@@ -82,7 +80,9 @@ def get_or_create_target_repo():
 def main():
     try:
         with TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH) as client:
-            msg = client.get_messages(BIN_CHANNEL_ID, ids=MESSAGE_ID)
+            client.get_dialogs()
+            entity = client.get_entity(BIN_CHANNEL_ID)
+            msg = client.get_messages(entity, ids=MESSAGE_ID)
             if not msg or not msg.media:
                 send_tg("Error: Could not find the video in BIN_CHANNEL.")
                 return
