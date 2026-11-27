@@ -1,27 +1,35 @@
-name: Telegram Video to GitHub Release
+name: Telegram to GitHub Uploader
+
 on:
   repository_dispatch:
     types: [upload_video]
+  workflow_dispatch:
 
 jobs:
   transfer:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - run: pip install telethon cryptg requests
-      - name: Transfer Video
+          python-version: '3.11'
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: pip install telethon requests
+
+      - name: Run transfer script
         env:
-          TG_API_ID: ${{ secrets.TG_API_ID }}
-          TG_API_HASH: ${{ secrets.TG_API_HASH }}
-          TG_STRING_SESSION: ${{ secrets.TG_STRING_SESSION }}
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          BIN_CHANNEL_ID: ${{ secrets.BIN_CHANNEL_ID }}
+          BIN_CHANNEL: ${{ secrets.BIN_CHANNEL }}
           GH_MEDIA_TOKEN: ${{ secrets.GH_MEDIA_TOKEN }}
           MESSAGE_ID: ${{ github.event.client_payload.message_id }}
           CHAT_ID: ${{ github.event.client_payload.chat_id }}
-          CUSTOM_NAME: ${{ github.event.client_payload.filename }}
         run: python transfer.py
