@@ -6,7 +6,6 @@ import subprocess
 import requests
 from telethon import TelegramClient
 
-# Environment Variables from GitHub Secrets & Dispatch Payload
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -42,8 +41,8 @@ def sanitize_filename(name: str) -> str:
     return clean
 
 
-def optimize_video(input_path: str) -> str:
-    """Keeps original resolution (576p), optimizes bitrate, and adds +faststart for instant playback."""
+def make_faststart(input_path: str) -> str:
+    """Keeps 100% original video quality and moves metadata to the front for instant streaming."""
     base, _ = os.path.splitext(input_path)
     output_path = f"{base}_fast.mp4"
 
@@ -51,26 +50,15 @@ def optimize_video(input_path: str) -> str:
         "ffmpeg",
         "-y",
         "-i", input_path,
-        "-c:v", "libx264",
-        "-crf", "24",
-        "-preset", "veryfast",
-        "-c:a", "aac",
-        "-b:a", "96k",
+        "-c", "copy",
         "-movflags", "+faststart",
         output_path,
     ]
 
-    print(f"Optimizing {input_path} with +faststart...")
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
     if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-        orig_mb = os.path.getsize(input_path) / (1024 * 1024)
-        new_mb = os.path.getsize(output_path) / (1024 * 1024)
-        print(f"Optimization complete: {orig_mb:.1f} MB -> {new_mb:.1f} MB")
         os.remove(input_path)
         return output_path
-
-    print("FFmpeg failed, falling back to original file:", result.stderr[-400:])
     return input_path
 
 
@@ -81,7 +69,6 @@ def get_github_username() -> str:
 
 
 def get_or_create_target_release(username: str):
-    """Finds an existing kanamovies_* public repo with less than 10 assets, or creates a new one."""
     r = requests.get(
         "https://api.github.com/user/repos?per_page=100&sort=created&direction=desc",
         headers=GH_HEADERS,
@@ -156,13 +143,12 @@ async def main():
         local_filename = sanitize_filename(raw_name)
         downloaded_path = await client.download_media(message, file=local_filename)
 
-        send_telegram_message(CHAT_ID, "⚙️ Optimizing 576p video for fast streaming...")
-        optimized_path = optimize_video(downloaded_path)
+        fast_path = make_faststart(downloaded_path)
 
-        send_telegram_message(CHAT_ID, "☁️ Uploading optimized video to GitHub...")
-        direct_url = upload_to_github(optimized_path)
+        send_telegram_message(CHAT_ID, "☁️ Uploading fast-start video to GitHub...")
+        direct_url = upload_to_github(fast_path)
 
-        final_mb = os.path.getsize(optimized_path) / (1024 * 1024)
+        final_mb = os.path.getsize(fast_path) / (1024 * 1024)
         send_telegram_message(
             CHAT_ID,
             f"✅ Upload Complete!\n\n📦 Size: {final_mb:.1f} MB\n🔗 Direct Link:\n{direct_url}",
