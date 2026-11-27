@@ -1,164 +1,144 @@
 import os
 import re
 import time
-import asyncio
 import subprocess
 import requests
-from telethon import TelegramClient
+from telethon.sync import TelegramClient
+from telethon.sessions import StringSession
 
-API_ID = int(os.environ["API_ID"])
-API_HASH = os.environ["API_HASH"]
+API_ID = int(os.environ["TG_API_ID"])
+API_HASH = os.environ["TG_API_HASH"]
+STRING_SESSION = os.environ["TG_STRING_SESSION"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-BIN_CHANNEL = int(os.environ["BIN_CHANNEL"])
-GH_TOKEN = os.environ.get("GH_MEDIA_TOKEN") or os.environ.get("GH_DISPATCH_TOKEN")
+BIN_CHANNEL_ID = int(os.environ["BIN_CHANNEL_ID"])
+GH_TOKEN = os.environ["GH_MEDIA_TOKEN"]
 MESSAGE_ID = int(os.environ["MESSAGE_ID"])
-CHAT_ID = int(os.environ["CHAT_ID"])
-
-REPO_PREFIX = "kanamovies_"
-RELEASE_TAG = "v1.0"
-MAX_ASSETS_PER_REPO = 10
+CHAT_ID = os.environ["CHAT_ID"]
+CUSTOM_NAME = os.environ.get("CUSTOM_NAME", "").strip()
 
 GH_HEADERS = {
     "Authorization": f"Bearer {GH_TOKEN}",
     "Accept": "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
 }
 
-
-def send_telegram_message(chat_id: int, text: str):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+def send_tg(text):
     requests.post(
-        url,
-        json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        json={"chat_id": CHAT_ID, "text": text, "disable_web_page_preview": True},
         timeout=30,
     )
 
+def clean_filename(raw_name, fallback_name):
+    base = raw_name or fallback_name or f"video_{int(time.time())}.mp4"
+    ext_match = re.search(r"(\.[a-zA-Z0-9]{2,5})$", base)
+    ext = ext_match.group(1).lower() if ext_match else ".mp4"
+    stem = re.sub(r"\.[a-zA-Z0-9]{2,5}$", "", base)
+    stem = re.sub(r"[^a-zA-Z0-9._-]+", "_", stem).strip("_")
+    if not stem:
+        stem = f"episode_{int(time.time())}"
+    return stem + ext
 
-def sanitize_filename(name: str) -> str:
-    clean = re.sub(r"[^a-zA-Z0-9._-]", "_", name)
-    if not clean.lower().endswith(".mp4"):
-        clean += ".mp4"
-    return clean
-
-
-def make_faststart(input_path: str) -> str:
-    """Keeps 100% original video quality and moves metadata to the front for instant streaming."""
+def make_faststart(input_path):
+    """Moves MP4 index metadata to the front in ~2 seconds with zero quality loss."""
+    if not input_path.lower().endswith(".mp4"):
+        return input_path
     base, _ = os.path.splitext(input_path)
-    output_path = f"{base}_fast.mp4"
-
+    fast_path = f"{base}_fast.mp4"
     cmd = [
         "ffmpeg",
         "-y",
         "-i", input_path,
         "-c", "copy",
         "-movflags", "+faststart",
-        output_path,
+        fast_path,
     ]
-
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if res.returncode == 0 and os.path.exists(fast_path) and os.path.getsize(fast_path) > 0:
         os.remove(input_path)
-        return output_path
+        return fast_path
     return input_path
 
-
-def get_github_username() -> str:
-    r = requests.get("https://api.github.com/user", headers=GH_HEADERS, timeout=30)
-    r.raise_for_status()
-    return r.json()["login"]
-
-
-def get_or_create_target_release(username: str):
-    r = requests.get(
+def get_or_create_target_repo():
+    repos = requests.get(
         "https://api.github.com/user/repos?per_page=100&sort=created&direction=desc",
         headers=GH_HEADERS,
         timeout=30,
-    )
-    r.raise_for_status()
+    ).json()
 
-    for repo in r.json():
-        repo_name = repo["name"]
-        if repo_name.startswith(REPO_PREFIX) and not repo["private"]:
-            rel_url = f"https://api.github.com/repos/{username}/{repo_name}/releases/tags/{RELEASE_TAG}"
-            rel_res = requests.get(rel_url, headers=GH_HEADERS, timeout=30)
-            if rel_res.status_code == 200:
-                rel_data = rel_res.json()
-                if len(rel_data.get("assets", [])) < MAX_ASSETS_PER_REPO:
-                    return repo_name, rel_data["upload_url"].split("{")[0]
+    for r in repos:
+        if r["private"] or any(k in r["name"].lower() for k in ("thumb", "image", "poster", "uploader")):
+            continue
+        rel_res = requests.get(f"https://api.github.com/repos/{r['full_name']}/releases/tags/v1.0", headers=GH_HEADERS, timeout=30)
+        if rel_res.status_code == 200:
+            rel = rel_res.json()
+            if len(rel.get("assets", [])) < 10:
+                return r["full_name"], rel["id"]
+        elif rel_res.status_code == 404:
+            created_rel = requests.post(
+                f"https://api.github.com/repos/{r['full_name']}/releases",
+                headers=GH_HEADERS,
+                json={"tag_name": "v1.0", "name": "Media Assets v1.0"},
+                timeout=30,
+            ).json()
+            return r["full_name"], created_rel["id"]
 
-    new_repo_name = f"{REPO_PREFIX}{int(time.time())}"
-    create_repo_res = requests.post(
+    new_name = f"kanamovies_{int(time.time())}"
+    new_repo = requests.post(
         "https://api.github.com/user/repos",
         headers=GH_HEADERS,
-        json={"name": new_repo_name, "private": False, "auto_init": True},
+        json={"name": new_name, "private": False, "auto_init": True},
         timeout=30,
-    )
-    create_repo_res.raise_for_status()
+    ).json()
     time.sleep(2)
-
-    create_rel_res = requests.post(
-        f"https://api.github.com/repos/{username}/{new_repo_name}/releases",
+    new_rel = requests.post(
+        f"https://api.github.com/repos/{new_repo['full_name']}/releases",
         headers=GH_HEADERS,
-        json={"tag_name": RELEASE_TAG, "name": "Media Storage v1.0"},
+        json={"tag_name": "v1.0", "name": "Media Assets v1.0"},
         timeout=30,
-    )
-    create_rel_res.raise_for_status()
-    upload_url = create_rel_res.json()["upload_url"].split("{")[0]
-    return new_repo_name, upload_url
+    ).json()
+    return new_repo["full_name"], new_rel["id"]
 
-
-def upload_to_github(file_path: str) -> str:
-    username = get_github_username()
-    repo_name, upload_url = get_or_create_target_release(username)
-
-    asset_name = f"{int(time.time())}_{os.path.basename(file_path)}"
-    upload_headers = {
-        "Authorization": f"Bearer {GH_TOKEN}",
-        "Content-Type": "video/mp4",
-    }
-
-    with open(file_path, "rb") as f:
-        res = requests.post(
-            f"{upload_url}?name={asset_name}",
-            headers=upload_headers,
-            data=f,
-            timeout=600,
-        )
-    res.raise_for_status()
-    return res.json()["browser_download_url"]
-
-
-async def main():
-    client = TelegramClient("bot_session", API_ID, API_HASH)
-    await client.start(bot_token=BOT_TOKEN)
-
+def main():
     try:
-        send_telegram_message(CHAT_ID, "⏳ Downloading video from Telegram...")
-        message = await client.get_messages(BIN_CHANNEL, ids=MESSAGE_ID)
-        if not message or not message.media:
-            send_telegram_message(CHAT_ID, "❌ Error: Video message not found in BIN_CHANNEL.")
-            return
+        with TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH) as client:
+            client.get_dialogs()
+            entity = client.get_entity(BIN_CHANNEL_ID)
+            msg = client.get_messages(entity, ids=MESSAGE_ID)
+            if not msg or not msg.media:
+                send_tg("Error: Could not find the video in BIN_CHANNEL.")
+                return
 
-        raw_name = getattr(message.file, "name", None) or f"episode_{MESSAGE_ID}.mp4"
-        local_filename = sanitize_filename(raw_name)
-        downloaded_path = await client.download_media(message, file=local_filename)
+            orig_name = getattr(msg.file, "name", "") or "episode.mp4"
+            final_name = clean_filename(CUSTOM_NAME, orig_name)
+            size_mb = round((msg.file.size or 0) / (1024 * 1024), 1)
 
-        fast_path = make_faststart(downloaded_path)
+            send_tg(f"Downloading {final_name} ({size_mb} MB) on GitHub runner...")
+            local_path = client.download_media(msg, file=final_name)
 
-        send_telegram_message(CHAT_ID, "☁️ Uploading fast-start video to GitHub...")
-        direct_url = upload_to_github(fast_path)
+        upload_path = make_faststart(local_path)
+        full_repo, release_id = get_or_create_target_repo()
+        send_tg(f"Uploading {final_name} to {full_repo}...")
 
-        final_mb = os.path.getsize(fast_path) / (1024 * 1024)
-        send_telegram_message(
-            CHAT_ID,
-            f"✅ Upload Complete!\n\n📦 Size: {final_mb:.1f} MB\n🔗 Direct Link:\n{direct_url}",
-        )
+        upload_url = f"https://uploads.github.com/repos/{full_repo}/releases/{release_id}/assets?name={final_name}"
+        with open(upload_path, "rb") as f:
+            up_res = requests.post(
+                upload_url,
+                headers={
+                    "Authorization": f"Bearer {GH_TOKEN}",
+                    "Content-Type": "video/mp4",
+                    "Accept": "application/vnd.github+json",
+                },
+                data=f,
+                timeout=3600,
+            )
+
+        data = up_res.json()
+        if up_res.status_code in (200, 201) and "browser_download_url" in data:
+            send_tg(f"Done! ({size_mb} MB)\nRepo: {full_repo}\n\nDirect Link:\n{data['browser_download_url']}")
+        else:
+            send_tg(f"GitHub Upload Failed ({up_res.status_code}): {data}")
     except Exception as e:
-        send_telegram_message(CHAT_ID, f"❌ Upload failed:\n{str(e)}")
-        raise
-    finally:
-        await client.disconnect()
-
+        send_tg(f"Transfer Error: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
