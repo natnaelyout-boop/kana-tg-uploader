@@ -16,7 +16,7 @@ MESSAGE_ID = int(os.environ["MESSAGE_ID"])
 CHAT_ID = os.environ["CHAT_ID"]
 CUSTOM_NAME = os.environ.get("CUSTOM_NAME", "").strip()
 
-CF_PROXY_BASE = "https://github-video-warmer.natnaelyout.workers.dev/?url="
+CF_STREAM_BASE = "https://github-video-warmer.natnaelyout.workers.dev/stream/"
 
 GH_HEADERS = {
     "Authorization": f"Bearer {GH_TOKEN}",
@@ -146,7 +146,8 @@ def main():
         data = up_res.json()
         if up_res.status_code in (200, 201) and "browser_download_url" in data:
             raw_github_url = data["browser_download_url"]
-            cf_stream_url = f"{CF_PROXY_BASE}{raw_github_url}"
+            clean_path = raw_github_url.replace("https://github.com/", "").replace("/releases/download/", "/")
+            cf_stream_url = f"{CF_STREAM_BASE}{clean_path}"
             send_tg(
                 f"Done! ({orig_mb} MB -> {final_mb} MB)\n"
                 f"Repo: {full_repo}\n\n"
