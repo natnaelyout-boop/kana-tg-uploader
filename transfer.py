@@ -41,7 +41,7 @@ def clean_filename(raw_name, fallback_name):
     return stem + ext
 
 def optimize_video(input_path):
-    """Compresses video to fast-loading ~95-110 MB MP4 with +faststart."""
+    """Compresses video to fast-loading ~95-120 MB MP4 with +faststart."""
     if not input_path.lower().endswith(".mp4"):
         return input_path
     base, _ = os.path.splitext(input_path)
@@ -127,9 +127,10 @@ def main():
         final_mb = round(os.path.getsize(upload_path) / (1024 * 1024), 1)
 
         full_repo, release_id = get_or_create_target_repo()
-        send_tg(f"Uploading {final_name} ({final_mb} MB) to {full_repo}...")
+        unique_asset_name = f"{int(time.time())}_{final_name}"
+        send_tg(f"Uploading {unique_asset_name} ({final_mb} MB) to {full_repo}...")
 
-        upload_url = f"https://uploads.github.com/repos/{full_repo}/releases/{release_id}/assets?name={final_name}"
+        upload_url = f"https://uploads.github.com/repos/{full_repo}/releases/{release_id}/assets?name={unique_asset_name}"
         with open(upload_path, "rb") as f:
             up_res = requests.post(
                 upload_url,
